@@ -1,0 +1,108 @@
+---
+title: "A Brief Introduction to ROPE"
+author: "Jonatan Kallus"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{A Brief Introduction to ROPE}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+This is a brief introduction to the use of ROPE (resampling of penalized
+estimates). For a mathematical description of the methods, and a comprehensive
+simulation study, I refer to the soon to be available article. ROPE performs
+edge selection with controlled false detection rate in graphical modeling of
+high-dimensional data.
+
+ROPE models variable selection counts from some consistent method for variable
+selection, that has been applied to random subsamples of a data matrix. Methods
+for variable selection in high-dimensional problems have a regularization
+parameter that tunes the size of the penalty for letting additional variables
+enter the model. By varying the penalty for each subsample we get a matrix `W`
+of selection counts. Each column corresponds to a variable and each row
+corresponds to a level of penalization. Rows should be ordered from lowest to
+highest penalization, and the sequence of penalizations should be linearly
+spaced. All values in `W` be non-negative and at most equal to the number of
+resamples that were performed. The method produces a q-value for each variable,
+so that selecting all variable with q-value less than 0.05 will yield a
+selection where approximately 0.05 of the selected variables are false
+positives.
+
+## An example
+
+Let `X` be a matrix of `n` observations (rows) and `p` variables (columns).
+Suppose we want to select a graphical model for `X` that has an edge between to
+variables if they are significantly correlated given all other variables. In
+this setting we must separate data variables from model variables. I.e. the
+graphical model that we are estimating have $d=p(p-1)/2$ variables. Let us
+call the model variables edges hereafter. The
+following code uses `glasso` as variable selection method to construct `W`.
+```r
+lambda <- seq(0.05, 0.5, 0.025)
+B <- 500
+n <- dim(x)[1]
+p <- dim(x)[2]
+
+W <- matrix(0, length(lambda), p*(p-1)/2)
+for (i in 1:B) {
+  bootstrap <- sample(n, n, replace=TRUE)
+  for (j in 1:length(lambda)) {
+    selection <- glasso::glasso(cov(x[bootstrap, ]), lambda[j])
+    selection <- sign(abs(selection$wi) + t(abs(selection$wi)))
+    selection <- selection[upper.tri(selection)]
+    W[j, ] <- W[j, ] + selection
+  }
+}
+```
+Now, `W` contains in each column the number of times an edge was selected for
+each of the penalty steps. The above is just one way to construct `W`, ROPE is
+applicable also for other selection methods and other kinds of models. Before
+using `W` to make an FDR controlled selection, we need to find a penalization
+interval where the distribution of counts for variables that should not be
+selected is separated from the distribution of counts for variables that should
+be selected. ROPE supplies the `explore` function to find such a range.
+```r
+install.packages('rope')
+result <- rope::explore(W, B)
+```
+This will construct a histogram for each level of penalization, check which
+histograms that are U-shaped and estimate how separated the distributions are
+for each level. `explore` returns estimates of separation for each level of
+penalization until it reaches a penalty level where the histogram is not
+U-shaped. Now, the user needs to find a range of penalization that ends at the
+highest level for which histograms are U-shaped, and starts at a location such
+that the separation has one approximate maximum.
+```r
+plot(result$pop.sep)
+```
+Let us say that we found such a range to be level with indices 5 to 15. Then we
+apply `rope` to these counts.
+```r
+selected.indices <- 5:15
+lambda <- lambda[selected.indices]
+W <- W[selected.indices, ]
+result <- rope::rope(W, B)
+```
+Now, `result` contains q-values for each edge. If we are interested in which
+edges that should be selected at an FDR of approximately 0.1, we check for
+q-values below 0.1.
+```r
+selected.edges <- result$q < 0.1
+```
+This concludes a basic example of the use of `rope` for FDR controlled variable
+selection. It is recommended to use `rope::plotrope` to examine the results of
+`rope::explore` and `rope::rope` to make sure that the statistical model of
+selection counts fits the supplied data.
+
+## Differently structured data
+
+ROPE is well suited to select graphical models. For such models, it is natural
+to store variables (edges) as a matrix rather than as vector, to keep track of
+the pair of nodes that each edge connects. For this reason, `rope` contains
+convenience wrappers `rope::exploregraph` and `rope::ropegraph`. They work just
+like `explore` and `rope`, but instead of our `length(lambda)` times `p*(p-1)/2`
+matrix `W`, they take a list of the same length as `lambda` of symmetric `p`
+times `p` matrices. Furthermore, this package contains the functions
+`symmetric.matrix2vector` and `vector2symmetric.matrix` to convert between these
+two ways of storing variable selection counts.
